@@ -5,11 +5,10 @@ AMD Developer Hackathon 2026
 import gradio as gr
 import requests
 import json
-import time
 import tempfile
 import os
 
-VLLM_URL = "http://localhost:8000/v1/chat/completions"
+VLLM_URL = os.getenv("VLLM_URL", "http://localhost:8000/v1/chat/completions")
 MODEL_NAME = "Qwen/Qwen2.5-Coder-14B-Instruct"
 
 
@@ -70,14 +69,14 @@ def plan_task(requirement, tech_stack):
     return call_qwen(messages, 0.2)
 
 
-def generate_code(step, context):
-    """Step 2: Generate code for a step."""
+def generate_code_stream(step, context):
+    """Step 2: Generate code for a step with streaming."""
     system_msg = "You are a senior software engineer. Write clean, well-commented Python code with error handling."
     messages = [
         {"role": "system", "content": system_msg},
         {"role": "user", "content": f"Context: {context}\n\nTask: {step}\n\nWrite the code:"}
     ]
-    return call_qwen(messages, 0.2)
+    return call_qwen_stream(messages, 0.2)
 
 
 def review_code(code, requirements):
@@ -90,7 +89,7 @@ def review_code(code, requirements):
     return call_qwen(messages, 0.3)
 
 
-def save_code_to_file(code: str) -> str:
+def save_code_to_file(code):
     """Save generated code to a temp file and return path."""
     tmp = tempfile.NamedTemporaryFile(
         mode="w", suffix=".py", delete=False, prefix="neuroforge_"
@@ -100,142 +99,30 @@ def save_code_to_file(code: str) -> str:
     return tmp.name
 
 
-# CSS for syntax highlighting + UI polish
-CUSTOM_CSS = """
-/* ── Base ── */
-body, .gradio-container {
-    background: #0d1117 !important;
-    color: #e6edf3 !important;
-    font-family: 'JetBrains Mono', 'Fira Code', monospace !important;
-}
-
-/* ── Header ── */
-.neuroforge-header {
-    background: linear-gradient(135deg, #0d1117 0%, #161b22 100%);
-    border-bottom: 1px solid #21262d;
-    padding: 1.5rem;
-    text-align: center;
-}
-
-/* ── Buttons ── */
-.gr-button-primary {
-    background: linear-gradient(135deg, #238636, #2ea043) !important;
-    border: 1px solid #2ea043 !important;
-    color: white !important;
-    font-family: 'JetBrains Mono', monospace !important;
-    font-weight: 600 !important;
-    letter-spacing: 0.05em !important;
-    transition: all 0.2s ease !important;
-}
-.gr-button-primary:hover {
-    background: linear-gradient(135deg, #2ea043, #3fb950) !important;
-    box-shadow: 0 0 12px rgba(46, 160, 67, 0.4) !important;
-}
-
-/* ── Download button ── */
-.download-btn {
-    background: linear-gradient(135deg, #1f6feb, #388bfd) !important;
-    border: 1px solid #388bfd !important;
-    color: white !important;
-    font-family: 'JetBrains Mono', monospace !important;
-}
-.download-btn:hover {
-    box-shadow: 0 0 12px rgba(56, 139, 253, 0.4) !important;
-}
-
-/* ── Code blocks ── */
-.code-output pre, .code-output code {
-    background: #161b22 !important;
-    border: 1px solid #30363d !important;
-    border-radius: 6px !important;
-    color: #e6edf3 !important;
-    font-family: 'JetBrains Mono', 'Fira Code', monospace !important;
-    font-size: 0.875rem !important;
-    line-height: 1.6 !important;
-    padding: 1rem !important;
-}
-
-/* Keyword highlighting via CSS (Gradio renders markdown code blocks) */
-.code-output .keyword   { color: #ff7b72; }
-.code-output .string    { color: #a5d6ff; }
-.code-output .comment   { color: #8b949e; font-style: italic; }
-.code-output .function  { color: #d2a8ff; }
-.code-output .number    { color: #79c0ff; }
-
-/* ── Status log ── */
-.status-log {
-    background: #0d1117 !important;
-    border: 1px solid #21262d !important;
-    border-radius: 6px !important;
-    padding: 1rem !important;
-    font-size: 0.82rem !important;
-    color: #8b949e !important;
-}
-
-/* ── Inputs ── */
-textarea, .gr-input, .gr-dropdown {
-    background: #161b22 !important;
-    border: 1px solid #30363d !important;
-    color: #e6edf3 !important;
-    font-family: 'JetBrains Mono', monospace !important;
-}
-
-/* ── Tabs ── */
-.tab-nav button {
-    background: #161b22 !important;
-    border: 1px solid #30363d !important;
-    color: #8b949e !important;
-}
-.tab-nav button.selected {
-    background: #21262d !important;
-    color: #e6edf3 !important;
-    border-bottom-color: #238636 !important;
-}
-"""
-
-HIGHLIGHT_JS = """
-<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/python.min.js"></script>
-<script>
-  // Re-run highlight.js whenever Gradio updates the DOM
-  const observer = new MutationObserver(() => {
-      document.querySelectorAll('pre code:not(.hljs)').forEach(block => {
-          hljs.highlightElement(block);
-      });
-  });
-  observer.observe(document.body, { childList: true, subtree: true });
-</script>
-"""
-
-
 def process_request(requirement, tech_stack):
     """Main processing pipeline with real-time streaming updates."""
     log_lines = []
-    generated_code = ""
+    all_code_blocks = []
 
     def log(icon, phase, msg):
         log_lines.append(f"{icon} **{phase}**: {msg}")
         return "\n\n".join(log_lines)
 
-    # ── Step 1: Plan ──────────────────────────────────────────
+    # Step 1: Plan
     status = log("🔍", "Planning", "Analyzing requirements...")
-    yield status, "", None
+    yield status, "*Generating plan...*", None
 
     plan = plan_task(requirement, tech_stack)
     steps = [s for s in plan.split("\n") if s.strip() and s[0].isdigit()]
 
     status = log("📋", "Plan", f"{len(steps)} steps identified")
-    yield status, f"```\n{plan}\n```", None
+    yield status, f"**Plan:**\n```\n{plan}\n```", None
 
-    # ── Step 2: Code (streamed per step) ──────────────────────
-    all_code_blocks = []
-
+    # Step 2: Code generation (streamed per step)
     for i, step in enumerate(steps[:3], 1):
-        status = log("⚙️", f"Step {i}/{min(len(steps),3)}", step.strip())
-        yield status, f"```\n{plan}\n```", None
+        status = log("⚙️", f"Step {i}/{min(len(steps), 3)}", step.strip())
+        yield status, f"**Plan:**\n```\n{plan}\n```\n\n*Generating step {i}...*", None
 
-        # stream the code for this step
         system_msg = "You are a senior software engineer. Write clean, well-commented Python code with error handling."
         messages = [
             {"role": "system", "content": system_msg},
@@ -245,50 +132,38 @@ def process_request(requirement, tech_stack):
         streamed = f"# Step {i}: {step.strip()}\n"
         for token in call_qwen_stream(messages, 0.2):
             streamed += token
-            all_code = "\n\n".join(all_code_blocks) + "\n\n" + streamed
-            yield status, f"```python\n{all_code}\n```", None
+            current_code = "\n\n".join(all_code_blocks) + ("\n\n" if all_code_blocks else "") + streamed
+            yield status, f"**Plan:**\n```\n{plan}\n```\n\n**Generated Code:**\n```python\n{current_code}\n```", None
 
         all_code_blocks.append(streamed)
         status = log("✅", f"Step {i}", "Complete")
-        yield status, f"```python\n{chr(10).join(all_code_blocks)}\n```", None
 
     generated_code = "\n\n".join(all_code_blocks)
 
-    # ── Step 3: Review ────────────────────────────────────────
+    # Step 3: Review
     status = log("🔎", "Review", "Checking code quality...")
-    yield status, f"```python\n{generated_code}\n```", None
+    yield status, f"**Generated Code:**\n```python\n{generated_code}\n```", None
 
     review = review_code(generated_code, requirement)
     status = log("🎉", "Done", "All steps complete!")
-    yield status, f"```python\n{generated_code}\n```", None
 
-    # ── Final output with download ────────────────────────────
-    final_md = f"```python\n{generated_code}\n```\n\n---\n\n### 🔍 Code Review\n\n{review}"
+    # Save file for download
     tmp_path = save_code_to_file(generated_code)
+
+    final_md = f"**Generated Code:**\n```python\n{generated_code}\n```\n\n---\n\n**Code Review:**\n\n{review}"
     yield status, final_md, tmp_path
 
 
-# ── Gradio UI ─────────────────────────────────────────────────────────────────
-with gr.Blocks(
-    title="NeuroForge - AI Software Engineer",
-    css=CUSTOM_CSS,
-    head=HIGHLIGHT_JS,
-    theme=gr.themes.Base(
-        primary_hue="green",
-        neutral_hue="slate",
-        font=gr.themes.GoogleFont("JetBrains Mono"),
-    ),
-) as demo:
+# Gradio UI
+with gr.Blocks(title="NeuroForge - AI Software Engineer") as demo:
 
     gr.Markdown(
         """# 🧠 NeuroForge
 ### Autonomous Software Engineering Agent
-**Powered by AMD MI300X + Qwen2.5-Coder-14B**
-"""
+**Powered by AMD MI300X + Qwen2.5-Coder-14B**"""
     )
 
     with gr.Row():
-        # ── Left panel ──────────────────────────────────────
         with gr.Column(scale=1):
             req_input = gr.Textbox(
                 label="What do you want to build?",
@@ -309,29 +184,14 @@ with gr.Blocks(
             btn = gr.Button("⚡ Generate Software", variant="primary", size="lg")
 
             gr.Markdown("---")
+            gr.Markdown("### 🤖 Agent Log")
+            status_out = gr.Markdown(value="*Waiting for task...*")
 
-            # Agent status log
-            status_out = gr.Markdown(
-                label="Agent Log",
-                value="*Waiting for task...*",
-                elem_classes=["status-log"],
-            )
-
-        # ── Right panel ─────────────────────────────────────
         with gr.Column(scale=2):
-            with gr.Tabs():
-                with gr.Tab("📄 Generated Code"):
-                    code_out = gr.Markdown(
-                        value="*Code will appear here as it is generated...*",
-                        elem_classes=["code-output"],
-                    )
-                    download_btn = gr.File(
-                        label="⬇️ Download Generated Code",
-                        visible=False,
-                        elem_classes=["download-btn"],
-                    )
+            gr.Markdown("### 📄 Generated Code")
+            code_out = gr.Markdown(value="*Code will appear here as it is generated...*")
+            download_btn = gr.File(label="⬇️ Download Generated Code (.py)", visible=False)
 
-    # ── Wire up ───────────────────────────────────────────────
     def run(req, stack):
         for status, code, tmp in process_request(req, stack):
             if tmp:
@@ -346,4 +206,4 @@ with gr.Blocks(
     )
 
 if __name__ == "__main__":
-    demo.launch(server_name="0.0.0.0", server_port=8080)
+    demo.launch(server_name="0.0.0.0", server_port=8080, share=True)
